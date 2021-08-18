@@ -206,7 +206,7 @@ class YoloV5ONNX(object):
         pred = self.onnx_session.run(output_names=self.output_name, input_feed=input_feed)
         results = self.nms(pred[0], conf_thres, iou_thres)
         time_used = time.time() - start
-        print("time used:{}".format(time_used))
+        # print("time used:{}".format(time_used))
 
         # 映射到原始图像
         img_shape = img.shape[2:]

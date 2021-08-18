@@ -29,6 +29,7 @@ from yolov5.utils.torch_utils import select_device, time_synchronized
 from yolov5.utils.plots import plot_one_box
 from yolov5_onnx import YoloV5ONNX
 from collections import deque
+from deep_sort import DeepSort
 
 
 # ---------------------------------------------------#
@@ -55,7 +56,8 @@ class Yolo:
         if self.device.type != 'cpu':
             self.model(torch.zeros(1, 3, self.imgsz[0], self.imgsz[1]).to(self.device).type_as(next(self.model.parameters())))  # run once
 
-    def letterbox(self, im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
+    def letterbox(self, im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True,
+                  stride=32):
         # Resize and pad image while meeting stride-multiple constraints
         shape = im.shape[:2]  # current shape [height, width]
         if isinstance(new_shape, int):
@@ -119,8 +121,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--yolo_weights', type=str,
                         default='/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s.pt', help='model.pt path')
-    parser.add_argument('--deep_sort_weights', type=str,
-                        default='/Users/qiuyurui/Desktop/models_file/deep_sort_car-ckpt.t7', help='ckpt.t7 path')
+    parser.add_argument('--deep_sort_weights', type=str, default='/Users/qiuyurui/Desktop/models_file/deep_sort_car-ckpt.t7', help='ckpt.t7 path')
     # file/folder, 0 for webcam
     parser.add_argument('--source', type=str, default='0', help='source')
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
@@ -150,7 +151,13 @@ def main():
     # yolo = Yolo(args, 960)
     yolo = YoloV5ONNX('/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s.onnx')  # traffic-best-6anchor-yolov5s.onnx
     # 创建跟踪器
-    tracker = Sort()
+    # tracker = Sort()
+    tracker = DeepSort(args.deep_sort_weights,
+                       max_dist=0.2, min_confidence=0.3,
+                       nms_max_overlap=0.5, max_iou_distance=0.7,
+                       max_age=70, n_init=3, nn_budget=100,
+                       use_cuda=True)
+
     # 生成多种不同的颜色
     np.random.seed(42)
     COLORS = np.random.randint(0, 255, size=(200, 3), dtype='uint8')
@@ -224,7 +231,8 @@ def main():
         if len(dets) == 0:
             pass
         else:
-            tracks = tracker.update(dets)
+            # tracks = tracker.update(dets)
+            tracks = tracker.update(dets, frame)
 
         num = 0
         for track in tracks:
@@ -235,7 +243,7 @@ def main():
             # 各参数依次是：照片/（左上角，右下角）/颜色/线宽
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), color, 2)
             # 各参数依次是：照片/添加的文字/左上角坐标/字体/字体大小/颜色/字体粗细
-            cv2.putText(frame, str(indexID), (int(bbox[0]), int(bbox[1] - 10)), 0, 5e-1, color, 1)
+            cv2.putText(frame, str(indexID) + f'_class: {track[-1]}', (int(bbox[0]), int(bbox[1] - 10)), 0, 5e-1, color, 1)
             # 记录当前帧的车辆数
             num += 1
             # 检测框中心(x,y)
@@ -260,6 +268,7 @@ def main():
 
         # 计算帧率
         t3 = time.time()
+        print(f"total time: {t3 - t1}")
         fps_total = (fps_total + (1. / (t3 - t1))) / 2
         fps_sort = (fps_sort + (1. / (t3 - t2))) / 2
         # 显示结果
@@ -268,7 +277,8 @@ def main():
         cv2.putText(frame, str(counter_up), (200, 90), 0, 0.8, (0, 255, 0), 2)
         cv2.putText(frame, str(counter_down), (450, 90), 0, 0.8, (0, 0, 255), 2)
         cv2.putText(frame, "Current TL Counter: " + str(num), (int(20), int(40)), 0, 5e-1, (0, 255, 0), 2)
-        cv2.putText(frame, "FPS total: %f, sort: %f" % (fps_total, fps_sort), (int(20), int(20)), 0, 5e-1, (0, 255, 0), 2)
+        cv2.putText(frame, "FPS total: %f, sort: %f" % (fps_total, fps_sort), (int(20), int(20)), 0, 5e-1, (0, 255, 0),
+                    2)
         cv2.namedWindow("YOLOV5-SORT", 0)
         cv2.resizeWindow('YOLOV5-SORT', 1280, 720)
         writer.write(frame)
