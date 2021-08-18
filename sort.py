@@ -86,7 +86,7 @@ def convert_x_to_bbox(x, score=None):
     """
     w = np.sqrt(x[2] * x[3])
     h = x[2] / w
-    if (score == None):
+    if score is None:
         return np.array([x[0] - w / 2., x[1] - h / 2., x[0] + w / 2., x[1] + h / 2.]).reshape((1, 4))
     else:
         return np.array([x[0] - w / 2., x[1] - h / 2., x[0] + w / 2., x[1] + h / 2., score]).reshape((1, 5))
@@ -139,11 +139,11 @@ class KalmanBoxTracker(object):
         """
         Advances the state vector and returns the predicted bounding box estimate.
         """
-        if ((self.kf.x[6] + self.kf.x[2]) <= 0):
+        if (self.kf.x[6] + self.kf.x[2]) <= 0:
             self.kf.x[6] *= 0.0
         self.kf.predict()
         self.age += 1
-        if (self.time_since_update > 0):
+        if self.time_since_update > 0:
             self.hit_streak = 0
         self.time_since_update += 1
         self.history.append(convert_x_to_bbox(self.kf.x))
@@ -162,7 +162,7 @@ def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
 
     Returns 3 lists of matches, unmatched_detections and unmatched_trackers
     """
-    if (len(trackers) == 0):
+    if len(trackers) == 0:
         return np.empty((0, 2), dtype=int), np.arange(len(detections)), np.empty((0, 5), dtype=int)
 
     iou_matrix = iou_batch(detections, trackers)
@@ -178,22 +178,22 @@ def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
 
     unmatched_detections = []
     for d, det in enumerate(detections):
-        if (d not in matched_indices[:, 0]):
+        if d not in matched_indices[:, 0]:
             unmatched_detections.append(d)
     unmatched_trackers = []
     for t, trk in enumerate(trackers):
-        if (t not in matched_indices[:, 1]):
+        if t not in matched_indices[:, 1]:
             unmatched_trackers.append(t)
 
     # filter out matched with low IOU
     matches = []
     for m in matched_indices:
-        if (iou_matrix[m[0], m[1]] < iou_threshold):
+        if iou_matrix[m[0], m[1]] < iou_threshold:
             unmatched_detections.append(m[0])
             unmatched_trackers.append(m[1])
         else:
             matches.append(m.reshape(1, 2))
-    if (len(matches) == 0):
+    if len(matches) == 0:
         matches = np.empty((0, 2), dtype=int)
     else:
         matches = np.concatenate(matches, axis=0)
@@ -204,56 +204,71 @@ def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
 class Sort(object):
     def __init__(self, max_age=1, min_hits=3, iou_threshold=0.3):
         """
-        Sets key parameters for SORT
+        初始化：设置SORT算法的关键参数
         """
+        # 最大检测数：目标未被检测到的帧数，超过之后会被删
         self.max_age = max_age
+        # 目标命中的最小次数，小于该次数不返回
         self.min_hits = min_hits
         self.iou_threshold = iou_threshold
+        # 卡尔曼跟踪器
         self.trackers = []
+        # 帧计数
         self.frame_count = 0
 
-    def update(self, dets=np.empty((0, 5))):
-        """
-        Params:
-          dets - a numpy array of detections in the format [[x1,y1,x2,y2,score],[x1,y1,x2,y2,score],...]
-        Requires: this method must be called once for each frame even with empty detections (use np.empty((0, 5)) for frames without detections).
-        Returns the a similar array, where the last column is the object ID.
-
-        NOTE: The number of objects returned may differ from the number of detections provided.
-        """
+    def update(self, dets):
         self.frame_count += 1
-        # get predicted locations from existing trackers.
-        trks = np.zeros((len(self.trackers), 5))
-        to_del = []
-        ret = []
+        # 在当前帧逐个预测轨迹位置，记录状态异常的跟踪器索引
+        # 根据当前所有的卡尔曼跟踪器个数（即上一帧中跟踪的目标个数）创建二维数组：行号为卡尔曼滤波器的标识索引，列向量为跟踪框的位置和ID
+        trks = np.zeros((len(self.trackers), 5))  # 存储跟踪器的预测
+        to_del = []  # 存储要删除的目标框
+        ret = []  # 存储要返回的追踪目标框
+        # 循环遍历卡尔曼跟踪器列表
         for t, trk in enumerate(trks):
+            # 使用卡尔曼跟踪器t产生对应目标的跟踪框
             pos = self.trackers[t].predict()[0]
+            # 遍历完成后，trk中存储了上一帧中跟踪的目标的预测跟踪框
             trk[:] = [pos[0], pos[1], pos[2], pos[3], 0]
+            # 如果跟踪框中包含空值则将该跟踪框添加到要删除的列表中
             if np.any(np.isnan(pos)):
                 to_del.append(t)
+        # numpy.ma.masked_invalid 屏蔽出现无效值的数组（NaN 或 inf）
+        # numpy.ma.compress_rows 压缩包含掩码值的2-D 数组的整行，将包含掩码值的整行去除
+        # trks中存储了上一帧中跟踪的目标并且在当前帧中的预测跟踪框
         trks = np.ma.compress_rows(np.ma.masked_invalid(trks))
+        # 逆向删除异常的跟踪器，防止破坏索引
         for t in reversed(to_del):
             self.trackers.pop(t)
+        # 将目标检测框与卡尔曼滤波器预测的跟踪框关联获取跟踪成功的目标，新增的目标，离开画面的目标
         matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(dets, trks, self.iou_threshold)
 
-        # update matched trackers with assigned detections
-        for m in matched:
-            self.trackers[m[1]].update(dets[m[0], :])
+        # 将跟踪成功的目标框更新到对应的卡尔曼滤波器
+        for t, trk in enumerate(self.trackers):
+            if t not in unmatched_trks:
+                d = matched[np.where(matched[:, 1] == t)[0], 0]
+                # 使用观测的边界框更新状态向量
+                trk.update(dets[d, :][0])
 
-        # create and initialise new trackers for unmatched detections
+        # 为新增的目标创建新的卡尔曼滤波器对象进行跟踪
         for i in unmatched_dets:
             trk = KalmanBoxTracker(dets[i, :])
             self.trackers.append(trk)
+
+        # 自后向前遍历，仅返回在当前帧出现且命中周期大于self.min_hits（除非跟踪刚开始）的跟踪结果；如果未命中时间大于self.max_age则删除跟踪器。
+        # hit_streak忽略目标初始的若干帧
         i = len(self.trackers)
         for trk in reversed(self.trackers):
+            # 返回当前边界框的估计值
             d = trk.get_state()[0]
+            # 跟踪成功目标的box与id放入ret列表中
             if (trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
                 ret.append(np.concatenate((d, [trk.id + 1])).reshape(1, -1))  # +1 as MOT benchmark requires positive
             i -= 1
-            # remove dead tracklet
-            if (trk.time_since_update > self.max_age):
+            # 跟踪失败或离开画面的目标从卡尔曼跟踪器中删除
+            if trk.time_since_update > self.max_age:
                 self.trackers.pop(i)
-        if (len(ret) > 0):
+        # 返回当前画面中所有目标的box与id,以二维矩阵形式返回
+        if len(ret) > 0:
             return np.concatenate(ret)
         return np.empty((0, 5))
 
@@ -284,7 +299,7 @@ if __name__ == '__main__':
     total_time = 0.0
     total_frames = 0
     colours = np.random.rand(32, 3)  # used only for display
-    if (display):
+    if display:
         if not os.path.exists('mot_benchmark'):
             print(
                 '\n\tERROR: mot_benchmark link not found!\n\n    Create a symbolic link to the MOT benchmark\n    (https://motchallenge.net/data/2D_MOT_2015/#download). E.g.:\n\n    $ ln -s /path/to/MOT2015_challenge/2DMOT2015 mot_benchmark\n\n')
@@ -311,7 +326,7 @@ if __name__ == '__main__':
                 dets[:, 2:4] += dets[:, 0:2]  # convert to [x1,y1,w,h] to [x1,y1,x2,y2]
                 total_frames += 1
 
-                if (display):
+                if display:
                     fn = os.path.join('mot_benchmark', phase, seq, 'img1', '%06d.jpg' % (frame))
                     im = io.imread(fn)
                     ax1.imshow(im)
@@ -325,12 +340,12 @@ if __name__ == '__main__':
                 for d in trackers:
                     print('%d,%d,%.2f,%.2f,%.2f,%.2f,1,-1,-1,-1' % (frame, d[4], d[0], d[1], d[2] - d[0], d[3] - d[1]),
                           file=out_file)
-                    if (display):
+                    if display:
                         d = d.astype(np.int32)
                         ax1.add_patch(patches.Rectangle((d[0], d[1]), d[2] - d[0], d[3] - d[1], fill=False, lw=3,
                                                         ec=colours[d[4] % 32, :]))
 
-                if (display):
+                if display:
                     fig.canvas.flush_events()
                     plt.draw()
                     ax1.cla()
@@ -338,5 +353,5 @@ if __name__ == '__main__':
     print("Total Tracking took: %.3f seconds for %d frames or %.1f FPS" % (
     total_time, total_frames, total_frames / total_time))
 
-    if (display):
+    if display:
         print("Note: to get real runtime results run without the option: --display")
