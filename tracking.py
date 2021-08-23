@@ -21,11 +21,11 @@ sys.path.append('..')
 sys.path.append('../yolov5')
 sys.path.append('../../PycharmProjects/yolov5')
 
-from yolov5.utils.google_utils import attempt_download
+from yolov5.utils.downloads import attempt_download
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.datasets import LoadImages, LoadStreams
 from yolov5.utils.general import check_img_size, non_max_suppression, scale_coords, check_imshow, xyxy2xywh
-from yolov5.utils.torch_utils import select_device, time_synchronized
+from yolov5.utils.torch_utils import select_device, time_sync
 from yolov5.utils.plots import plot_one_box
 from yolov5_onnx import YoloV5ONNX
 from collections import deque
@@ -103,7 +103,7 @@ class Yolo:
             img = img.unsqueeze(0)
 
         # Inference
-        t1 = time_synchronized()
+        t1 = time_sync()
         pred = self.model(img, augment=False)[0]
 
         # Apply NMS
@@ -113,7 +113,7 @@ class Yolo:
         if det is not None and len(det):
             # Rescale boxes from img_size to im0 size
             det[:, :4] = scale_coords(img.shape[2:], det[:, :4], img0.shape).round()
-        t2 = time_synchronized()
+        t2 = time_sync()
         return det.numpy(), (t1 - t0, t2 - t1)
 
 
@@ -121,13 +121,13 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--yolo_weights', type=str,
                         default='/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s.pt', help='model.pt path')
-    parser.add_argument('--deep_sort_weights', type=str, default='/Users/qiuyurui/Desktop/models_file/deep_sort_car-ckpt.t7', help='ckpt.t7 path')
+    parser.add_argument('--deep_sort_weights', type=str, default='/Users/qiuyurui/Desktop/models_file/res18focalfixepoch=49-step=1849.pt', help='ckpt.t7 path')  # '/Users/qiuyurui/Desktop/models_file/deep_sort_car-ckpt.t7'/Users/qiuyurui/Projects/PycharmProjects/PyTorch_CIFAR10/state_dicts/resnet18.pt
     # file/folder, 0 for webcam
     parser.add_argument('--source', type=str, default='0', help='source')
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=960, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.4, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
+    parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.4, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--device', default='cpu', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
@@ -151,12 +151,12 @@ def main():
     # yolo = Yolo(args, 960)
     yolo = YoloV5ONNX('/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s.onnx')  # traffic-best-6anchor-yolov5s.onnx
     # 创建跟踪器
-    # tracker = Sort()
-    tracker = DeepSort(args.deep_sort_weights,
-                       max_dist=0.2, min_confidence=0.3,
-                       nms_max_overlap=0.5, max_iou_distance=0.7,
-                       max_age=70, n_init=3, nn_budget=100,
-                       use_cuda=True)
+    tracker = Sort(max_age=20, min_hits=2)
+    # tracker = DeepSort(args.deep_sort_weights,
+    #                    max_dist=0.2, min_confidence=0.3,
+    #                    nms_max_overlap=0.5, max_iou_distance=0.7,
+    #                    max_age=15, n_init=3, nn_budget=20,
+    #                    use_cuda=True)
 
     # 生成多种不同的颜色
     np.random.seed(42)
@@ -202,7 +202,7 @@ def main():
         fps_cur = int(cap.get(cv2.CAP_PROP_FPS))
         print("[INFO] video fps :{}".format(fps_cur))
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter("./output.mp4", fourcc, fps_cur, size, True)
+        writer = cv2.VideoWriter("./sort_1_output.mp4", fourcc, fps_cur, size, True)
     except:
         print("[INFO] could not determine in video")
 
@@ -231,8 +231,8 @@ def main():
         if len(dets) == 0:
             pass
         else:
-            # tracks = tracker.update(dets)
-            tracks = tracker.update(dets, frame)
+            tracks = tracker.update(dets)
+            # tracks = tracker.update(dets, frame)
 
         num = 0
         for track in tracks:
@@ -243,7 +243,7 @@ def main():
             # 各参数依次是：照片/（左上角，右下角）/颜色/线宽
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), color, 2)
             # 各参数依次是：照片/添加的文字/左上角坐标/字体/字体大小/颜色/字体粗细
-            cv2.putText(frame, str(indexID) + f'_class: {track[-1]}', (int(bbox[0]), int(bbox[1] - 10)), 0, 5e-1, color, 1)
+            cv2.putText(frame, f'ID: {str(indexID)} class: {int(track[-1])}', (int(bbox[0]), int(bbox[1] - 10)), 0, 5e-1, color, 1)
             # 记录当前帧的车辆数
             num += 1
             # 检测框中心(x,y)

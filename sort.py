@@ -124,6 +124,7 @@ class KalmanBoxTracker(object):
         self.hits = 0
         self.hit_streak = 0
         self.age = 0
+        self.class_id = bbox[-1]
 
     def update(self, bbox):
         """
@@ -220,7 +221,7 @@ class Sort(object):
         self.frame_count += 1
         # 在当前帧逐个预测轨迹位置，记录状态异常的跟踪器索引
         # 根据当前所有的卡尔曼跟踪器个数（即上一帧中跟踪的目标个数）创建二维数组：行号为卡尔曼滤波器的标识索引，列向量为跟踪框的位置和ID
-        trks = np.zeros((len(self.trackers), 5))  # 存储跟踪器的预测
+        trks = np.zeros((len(self.trackers), 6))  # 存储跟踪器的预测 保存 box坐标+ id + class_id
         to_del = []  # 存储要删除的目标框
         ret = []  # 存储要返回的追踪目标框
         # 循环遍历卡尔曼跟踪器列表
@@ -228,7 +229,7 @@ class Sort(object):
             # 使用卡尔曼跟踪器t产生对应目标的跟踪框
             pos = self.trackers[t].predict()[0]
             # 遍历完成后，trk中存储了上一帧中跟踪的目标的预测跟踪框
-            trk[:] = [pos[0], pos[1], pos[2], pos[3], 0]
+            trk[:] = [pos[0], pos[1], pos[2], pos[3], 0, self.trackers[t].class_id]
             # 如果跟踪框中包含空值则将该跟踪框添加到要删除的列表中
             if np.any(np.isnan(pos)):
                 to_del.append(t)
@@ -260,9 +261,9 @@ class Sort(object):
         for trk in reversed(self.trackers):
             # 返回当前边界框的估计值
             d = trk.get_state()[0]
-            # 跟踪成功目标的box与id放入ret列表中
+            # 跟踪成功目标的box与id放入ret列表中 + class_id
             if (trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
-                ret.append(np.concatenate((d, [trk.id + 1])).reshape(1, -1))  # +1 as MOT benchmark requires positive
+                ret.append(np.concatenate((d, [trk.id + 1, trk.class_id])).reshape(1, -1))  # +1 as MOT benchmark requires positive
             i -= 1
             # 跟踪失败或离开画面的目标从卡尔曼跟踪器中删除
             if trk.time_since_update > self.max_age:
@@ -270,7 +271,7 @@ class Sort(object):
         # 返回当前画面中所有目标的box与id,以二维矩阵形式返回
         if len(ret) > 0:
             return np.concatenate(ret)
-        return np.empty((0, 5))
+        return np.empty((0, 6))
 
 
 def parse_args():

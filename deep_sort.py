@@ -11,7 +11,7 @@ __all__ = ['DeepSort']
 
 class DeepSort(object):
     def __init__(self, model_path, max_dist=0.2, min_confidence=0.3, nms_max_overlap=1.0, max_iou_distance=0.7,
-                 max_age=70, n_init=3, nn_budget=100, use_cuda=True):
+                 max_age=70, n_init=3, nn_budget=20, use_cuda=True):
         self.min_confidence = min_confidence
         self.nms_max_overlap = nms_max_overlap
 
@@ -27,6 +27,8 @@ class DeepSort(object):
         # generate detections
         bbox_tlwh = [self._xyxy_to_tlwh(bbox_xyxy) for bbox_xyxy in bbox_xyxys]
         features = self._get_features(bbox_xyxys, ori_img)
+        if features is None:
+            return []
         detections = [Detection(bbox_tlwh[i], conf, features[i]) for i, conf in enumerate(
             confidences) if conf > self.min_confidence]
 
@@ -101,8 +103,13 @@ class DeepSort(object):
             x1, y1, x2, y2 = map(int, box)
             im = ori_img[y1:y2, x1:x2]
             im_crops.append(im)
-        if im_crops:
-            features = self.extractor(im_crops)
-        else:
-            features = np.array([])
-        return features
+        try:
+            if im_crops:
+                # features = self.extractor(im_crops)
+                features = self.extractor.predict(im_crops)
+            else:
+                features = np.array([])
+            return features
+        except Exception as e:
+            print(e)
+            return None
