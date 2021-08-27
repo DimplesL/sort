@@ -4,7 +4,7 @@ import numpy as np
 from . import kalman_filter
 from . import linear_assignment
 from . import iou_matching
-from .track import Track
+from .track import TrackTarget
 
 
 class Tracker:
@@ -37,11 +37,12 @@ class Tracker:
 
     """
 
-    def __init__(self, metric, max_iou_distance=0.7, max_age=70, n_init=3):
+    def __init__(self, metric, max_iou_distance=0.7, max_age=70, n_init=3, use_feature=True):
         self.metric = metric
         self.max_iou_distance = max_iou_distance
         self.max_age = max_age
         self.n_init = n_init
+        self.use_feature = use_feature
 
         self.kf = kalman_filter.KalmanFilter()
         self.tracks = []
@@ -76,7 +77,7 @@ class Tracker:
         # Update track set.
         for track_idx, detection_idx in matches:
             self.tracks[track_idx].update(
-                self.kf, detections[detection_idx])
+                self.kf, detections[detection_idx], classes[detection_idx].item())
         for track_idx in unmatched_tracks:
             self.tracks[track_idx].mark_missed()
         for detection_idx in unmatched_detections:
@@ -114,11 +115,14 @@ class Tracker:
             i for i, t in enumerate(self.tracks) if not t.is_confirmed()]
 
         # Associate confirmed tracks using appearance features.
-        matches_a, unmatched_tracks_a, unmatched_detections = \
-            linear_assignment.matching_cascade(
-                gated_metric, self.metric.matching_threshold, self.max_age,
-                self.tracks, detections, confirmed_tracks)
-
+        if self.use_feature:
+            matches_a, unmatched_tracks_a, unmatched_detections = \
+                linear_assignment.matching_cascade(
+                    gated_metric, self.metric.matching_threshold, self.max_age,
+                    self.tracks, detections, confirmed_tracks)
+        else:
+            matches_a, unmatched_tracks_a, unmatched_detections = \
+                [], [i for i in range(len(self.tracks))], [i for i in range(len(detections))]
         # Associate remaining tracks together with unconfirmed tracks using IOU.
         iou_track_candidates = unconfirmed_tracks + [
             k for k in unmatched_tracks_a if
@@ -130,14 +134,16 @@ class Tracker:
             linear_assignment.min_cost_matching(
                 iou_matching.iou_cost, self.max_iou_distance, self.tracks,
                 detections, iou_track_candidates, unmatched_detections)
-
-        matches = matches_a + matches_b
+        matches_c, unmatched_detections, unmatched_tracks_c = \
+            linear_assignment.bbox_distance_strategy(detections, self.tracks, unmatched_detections, unmatched_tracks_b)
+        matches = matches_a + matches_b + matches_c
         unmatched_tracks = list(set(unmatched_tracks_a + unmatched_tracks_b))
         return matches, unmatched_tracks, unmatched_detections
 
     def _initiate_track(self, detection, class_id):
         mean, covariance = self.kf.initiate(detection.to_xyah())
-        self.tracks.append(Track(
+        self.tracks.append(TrackTarget(
             mean, covariance, self._next_id, class_id, self.n_init, self.max_age,
             detection.feature))
         self._next_id += 1
+        self._next_id %= 1000

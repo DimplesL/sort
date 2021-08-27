@@ -18,11 +18,13 @@ import random
 
 
 class YoloV5ONNX(object):
-    def __init__(self, onnx_path):
+    def __init__(self, onnx_path, conf_thres=0.25, iou_thres=0.45):
         '''初始化onnx'''
         self.onnx_session = onnxruntime.InferenceSession(onnx_path)
         self.input_name = self.get_input_name()
         self.output_name = self.get_output_name()
+        self.conf_thres = conf_thres  # 置信度阈值
+        self.iou_thres = iou_thres  # iou阈值
 
     def get_input_name(self):
         '''获取输入节点名称'''
@@ -97,10 +99,10 @@ class YoloV5ONNX(object):
 
         return y
 
-    def nms(self, prediction, conf_thres=0.1, iou_thres=0.6, agnostic=False):
+    def nms(self, prediction, agnostic=False):  # 进行nms是否也去除不同类别之间的框
         if prediction.dtype is torch.float16:
             prediction = prediction.float()  # to FP32
-        xc = prediction[..., 4] > conf_thres  # candidates
+        xc = prediction[..., 4] > self.conf_thres  # candidates
         min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
         max_det = 300  # maximum number of detections per image
         output = [np.zeros((0, 6), dtype=np.float32)] * prediction.shape[0]
@@ -115,17 +117,20 @@ class YoloV5ONNX(object):
             # conf, j = x[:, 5:].max(1, keepdim=True)
             conf, j = x[:, 5:].max(1, keepdims=True), np.expand_dims(x[:, 5:].argmax(1), axis=1)
             # x = torch.cat((torch.tensor(box), conf, j.float()), 1)[conf.view(-1) > conf_thres]
-            x = np.concatenate((box, conf, j), 1)[np.where(conf > conf_thres)[0]]
+            x = np.concatenate((box, conf, j), 1)[np.where(conf > self.conf_thres)[0]]
             n = x.shape[0]  # number of boxes
             if not n:
                 continue
             c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
             boxes, scores = torch.tensor(x[:, :4] + c), torch.tensor(x[:, 4])  # boxes (offset by class), scores
-            i = torchvision.ops.boxes.nms(boxes, scores, iou_thres)
+            i = torchvision.ops.boxes.nms(boxes, scores, self.iou_thres)
 
             if i.shape[0] > max_det:  # limit detections
                 i = i[:max_det]
-            output[xi] = x[i].reshape(i.shape[0], x.shape[1])
+            output_xi = x[i].reshape(i.shape[0], x.shape[1])
+            ii = torchvision.ops.boxes.nms(torch.tensor(output_xi[:, :4]), torch.tensor(output_xi[:, 4]), self.iou_thres)
+            output[xi] = output_xi[ii].reshape(ii.shape[0], output_xi.shape[1])
+            # output[xi] = x[i].reshape(i.shape[0], x.shape[1])
         return output
 
     def clip_coords(self, boxes, img_shape):
@@ -172,8 +177,6 @@ class YoloV5ONNX(object):
         '''执行前向操作预测输出'''
         # 超参数设置
         # img_size = (640, 640)  # 图片缩放大小
-        conf_thres = 0.25  # 置信度阈值
-        iou_thres = 0.45  # iou阈值
         # class_num = 1  # 类别数
 
         stride = [8, 16, 32]
@@ -203,8 +206,8 @@ class YoloV5ONNX(object):
         # 前向推理
         start = time.time()
         input_feed = self.get_input_feed(img)
-        pred = self.onnx_session.run(output_names=self.output_name, input_feed=input_feed)
-        results = self.nms(pred[0], conf_thres, iou_thres)
+        pred = self.onnx_session.run(output_names=self.output_name, input_feed=input_feed)  # pred的形式: xyxy score class
+        results = self.nms(pred[0], agnostic=False)
         time_used = time.time() - start
         # print("time used:{}".format(time_used))
 

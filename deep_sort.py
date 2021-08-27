@@ -9,29 +9,52 @@ from deep_sort_utils.tracker import Tracker
 __all__ = ['DeepSort']
 
 
+def expand_bbox(bbox, size):
+    w = bbox[:, 2] - bbox[:, 0]
+    h = bbox[:, 3] - bbox[:, 1]
+    bbox[:, 0] -= w
+    bbox[:, 1] -= h
+    bbox[:, 2] += w
+    bbox[:, 3] += h
+    np.clip(bbox, 0., size)
+    return bbox
+
+
 class DeepSort(object):
     def __init__(self, model_path, max_dist=0.2, min_confidence=0.3, nms_max_overlap=1.0, max_iou_distance=0.7,
-                 max_age=70, n_init=3, nn_budget=20, use_cuda=True):
+                 max_age=70, n_init=3, nn_budget=20, use_cuda=True, use_feature=True):
         self.min_confidence = min_confidence
         self.nms_max_overlap = nms_max_overlap
-
-        self.extractor = Extractor(model_path, use_cuda=use_cuda)
+        self.use_feature = use_feature
+        if self.use_feature:
+            self.extractor = Extractor(model_path, use_cuda=use_cuda)
 
         max_cosine_distance = max_dist
         metric = NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
-        self.tracker = Tracker(metric, max_iou_distance=max_iou_distance, max_age=max_age, n_init=n_init)
+        self.tracker = Tracker(metric, max_iou_distance=max_iou_distance, max_age=max_age, n_init=n_init,
+                               use_feature=self.use_feature)
+
+    #
+    # def expand_box(self, bbox_xyxys):
+    #     new_expanded = np.zeros_like(bbox_xyxys)
+    #     for bbox_xyxy in bbox_xyxys:
+    #         new_expanded
 
     def update(self, det, ori_img):
+        expand_bbox(det, 960)
         bbox_xyxys, confidences, classes = det[:, :4], det[:, 4], det[:, 5]
         self.height, self.width = ori_img.shape[:2]
         # generate detections
         bbox_tlwh = [self._xyxy_to_tlwh(bbox_xyxy) for bbox_xyxy in bbox_xyxys]
-        features = self._get_features(bbox_xyxys, ori_img)
-        if features is None:
-            return []
-        detections = [Detection(bbox_tlwh[i], conf, features[i]) for i, conf in enumerate(
-            confidences) if conf > self.min_confidence]
-
+        if self.use_feature:
+            features = self._get_features(bbox_xyxys, ori_img)
+            if features is None:
+                return []
+            detections = [Detection(bbox_tlwh[i], conf, features[i]) for i, conf in enumerate(
+                confidences) if conf > self.min_confidence]
+        else:
+            detections = [Detection(bbox_tlwh[i], conf) for i, conf in enumerate(
+                confidences) if conf > self.min_confidence]
         # run on non-maximum supression
         # boxes = np.array([d.tlwh for d in detections])
         # scores = np.array([d.confidence for d in detections])
@@ -53,7 +76,6 @@ class DeepSort(object):
         if len(outputs) > 0:
             outputs = np.stack(outputs, axis=0)
         return outputs
-
 
     @staticmethod
     def _xywh_to_tlwh(bbox_xywh):

@@ -7,6 +7,8 @@
 @time: 2021/8/17 4:14 下午
 @desc:
 """
+import os
+
 from sort import Sort
 import time
 import argparse
@@ -54,7 +56,8 @@ class Yolo:
 
         # Run inference
         if self.device.type != 'cpu':
-            self.model(torch.zeros(1, 3, self.imgsz[0], self.imgsz[1]).to(self.device).type_as(next(self.model.parameters())))  # run once
+            self.model(torch.zeros(1, 3, self.imgsz[0], self.imgsz[1]).to(self.device).type_as(
+                next(self.model.parameters())))  # run once
 
     def letterbox(self, im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True,
                   stride=32):
@@ -120,8 +123,11 @@ class Yolo:
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--yolo_weights', type=str,
-                        default='/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s.pt', help='model.pt path')
-    parser.add_argument('--deep_sort_weights', type=str, default='/Users/qiuyurui/Desktop/models_file/res18focalfixepoch=49-step=1849.pt', help='ckpt.t7 path')  # '/Users/qiuyurui/Desktop/models_file/deep_sort_car-ckpt.t7'/Users/qiuyurui/Projects/PycharmProjects/PyTorch_CIFAR10/state_dicts/resnet18.pt
+                        default='/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s_720_1280.onnx',
+                        help='model.pt path')  # '/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s.pt'
+    parser.add_argument('--deep_sort_weights', type=str,
+                        default='/Users/qiuyurui/Desktop/models_file/res18focalfixepoch=49-step=1849.pt',
+                        help='ckpt.t7 path')  # '/Users/qiuyurui/Desktop/models_file/deep_sort_car-ckpt.t7'/Users/qiuyurui/Projects/PycharmProjects/PyTorch_CIFAR10/state_dicts/resnet18.pt
     # file/folder, 0 for webcam
     parser.add_argument('--source', type=str, default='0', help='source')
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
@@ -145,37 +151,37 @@ def get_args():
     return args
 
 
-def main():
+def cut_image_center_top(img, target_size, ratio_w_half=0.15, ratio_h_down=0.25, ratio_h_top=0.05):
+    h, w = img.shape[:2]
+    tl_x_shift, tl_y_shift = 0, 0
+    if h <= target_size[0] or w <= target_size[1]:
+        return img, tl_x_shift, tl_y_shift
+    tl_x_shift = int(ratio_w_half * w)
+    tl_y_shift = int(ratio_h_top * h)
+    return img[tl_y_shift:h - int(ratio_h_down * h), tl_x_shift:w - tl_x_shift, :], tl_x_shift, tl_y_shift
+
+
+def main(video_path, video_file, save_path):
     # 创建检测器
     args = get_args()
+    top_center_cut = True
+    img_size = (736, 1280)
     # yolo = Yolo(args, 960)
-    yolo = YoloV5ONNX('/Users/qiuyurui/Desktop/models_file/traffic_4class_yolo5s.onnx')  # traffic-best-6anchor-yolov5s.onnx
+    yolo = YoloV5ONNX(args.yolo_weights, conf_thres=0.3, iou_thres=0.25)  # traffic-best-6anchor-yolov5s.onnx
     # 创建跟踪器
-    tracker = Sort(max_age=20, min_hits=2)
+    tracker = Sort(max_age=15, min_hits=2, iou_threshold=0.1, dist_thresh=200, size=img_size)
     # tracker = DeepSort(args.deep_sort_weights,
     #                    max_dist=0.2, min_confidence=0.3,
-    #                    nms_max_overlap=0.5, max_iou_distance=0.7,
-    #                    max_age=15, n_init=3, nn_budget=20,
-    #                    use_cuda=True)
+    #                    nms_max_overlap=0.5, max_iou_distance=0.9,
+    #                    max_age=30, n_init=2, nn_budget=30,
+    #                    use_cuda=True, use_feature=False)
 
     # 生成多种不同的颜色
     np.random.seed(42)
     COLORS = np.random.randint(0, 255, size=(200, 3), dtype='uint8')
     # 存储中心点
     pts = [deque(maxlen=30) for _ in range(9999)]
-    # 帧率
-    fps_total = 0
-    fps_sort = 0
 
-    # ---------------------------------------------------#
-    #  虚拟线圈统计车流量
-    # ---------------------------------------------------#
-    # 虚拟线圈
-    line = [(0, 100), (1500, 100)]
-
-    # AC = ((C[0] - A[0]), (C[1] - A[1]))
-    # AB = ((B[0] - A[0]), (B[1] - A[1]))
-    # 计算由A，B，C三点构成的向量AC，AB之间的关系
     def ccw(A, B, C):
         return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
 
@@ -183,17 +189,15 @@ def main():
     def intersect(A, B, C, D):
         return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
 
-    # 车辆总数
-    counter = 0
-    # 正向车道的车辆数据
-    counter_up = 0
-    # 逆向车道的车辆数据
-    counter_down = 0
+    # 帧率
+    fps_total = 0
+    fps_sort = 0
 
     # ---------------------------------------------------#
     #  读取视频并获取基本信息
     # ---------------------------------------------------#
-    cap = cv2.VideoCapture("/Users/qiuyurui/Projects/datas/bilibili_dashcam/249852744-1-192.mp4.mp4")
+
+    cap = cv2.VideoCapture(video_path)
     try:
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         print("[INFO] total {} Frame in video".format(total))
@@ -202,7 +206,7 @@ def main():
         fps_cur = int(cap.get(cv2.CAP_PROP_FPS))
         print("[INFO] video fps :{}".format(fps_cur))
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter("./sort_1_output.mp4", fourcc, fps_cur, size, True)
+        writer = cv2.VideoWriter(f"{save_path}/sort_{video_file}", fourcc, fps_cur, (img_size[1], img_size[0]), True)
     except:
         print("[INFO] could not determine in video")
 
@@ -225,14 +229,29 @@ def main():
             break
         t1 = time.time()
 
-        dets, time_used = yolo.predict(frame)
+        ori_frame = frame.copy()
+        # print(ori_frame.shape)
+        cut_frame, tl_x_shift, tl_y_shift = cut_image_center_top(ori_frame, img_size, ratio_w_half=0.15, ratio_h_down=0.25, ratio_h_top=0.05)
+        # print(cut_frame.shape)
+        frame = cut_frame
+        dets, time_used = yolo.predict(frame, img_size=img_size)  # h ,w (576, 1024) (960, 960)
+
         print(f'predict time used: {time_used}')
         t2 = time.time()
-        if len(dets) == 0:
-            pass
-        else:
-            tracks = tracker.update(dets)
-            # tracks = tracker.update(dets, frame)
+
+        # todo:track the red and yellow light
+        # dets = dets[np.where((dets[:, -1] == 0) | (dets[:, -1] == 2))]
+
+        # if len(dets) != 0:
+        #     # tracks = tracker.update(dets)
+        #
+        # else:
+        #     tracks = []
+        # if len(dets) == 0:
+        #     dets = np.empty((0, 6), dtype=int)
+        tracks = tracker.update(dets, frame)
+
+        # tracks = dets
 
         num = 0
         for track in tracks:
@@ -243,8 +262,9 @@ def main():
             # 各参数依次是：照片/（左上角，右下角）/颜色/线宽
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), color, 2)
             # 各参数依次是：照片/添加的文字/左上角坐标/字体/字体大小/颜色/字体粗细
-            cv2.putText(frame, f'ID: {str(indexID)} class: {int(track[-1])}', (int(bbox[0]), int(bbox[1] - 10)), 0, 5e-1, color, 1)
-            # 记录当前帧的车辆数
+            cv2.putText(frame, f'ID: {str(indexID)} class: {int(track[-1])}', (int(bbox[0]), int(bbox[1] - 10)), 0,
+                        5e-1, color, 1)
+            # 记录当前帧数量
             num += 1
             # 检测框中心(x,y)
             center = (int(((bbox[0]) + (bbox[2])) / 2), int(((bbox[1]) + (bbox[3])) / 2))
@@ -255,16 +275,6 @@ def main():
                 if pts[indexID][j - 1] is None or pts[indexID][j] is None:
                     continue
                 cv2.line(frame, (pts[indexID][j - 1]), (pts[indexID][j]), color, 2)
-            # 虚拟线圈计数
-            if len(pts[indexID]) >= 2:
-                p1 = pts[indexID][-2]
-                p0 = pts[indexID][-1]
-                if intersect(p0, p1, line[0], line[1]):
-                    counter += 1
-                    if p1[1] > p0[1]:
-                        counter_down += 1
-                    else:
-                        counter_up += 1
 
         # 计算帧率
         t3 = time.time()
@@ -272,16 +282,15 @@ def main():
         fps_total = (fps_total + (1. / (t3 - t1))) / 2
         fps_sort = (fps_sort + (1. / (t3 - t2))) / 2
         # 显示结果
-        cv2.line(frame, line[0], line[1], (0, 255, 0), 2)
-        cv2.putText(frame, str(counter), (20, 90), 0, 0.8, (255, 0, 0), 2)
-        cv2.putText(frame, str(counter_up), (200, 90), 0, 0.8, (0, 255, 0), 2)
-        cv2.putText(frame, str(counter_down), (450, 90), 0, 0.8, (0, 0, 255), 2)
+        # cv2.line(frame, line[0], line[1], (0, 255, 0), 2)
+        # cv2.putText(frame, str(counter), (20, 90), 0, 0.8, (255, 0, 0), 2)
+        # cv2.putText(frame, str(counter_up), (200, 90), 0, 0.8, (0, 255, 0), 2)
+        # cv2.putText(frame, str(counter_down), (450, 90), 0, 0.8, (0, 0, 255), 2)
         cv2.putText(frame, "Current TL Counter: " + str(num), (int(20), int(40)), 0, 5e-1, (0, 255, 0), 2)
-        cv2.putText(frame, "FPS total: %f, sort: %f" % (fps_total, fps_sort), (int(20), int(20)), 0, 5e-1, (0, 255, 0),
-                    2)
+        cv2.putText(frame, "FPS total: %f, sort: %f" % (fps_total, fps_sort), (int(20), int(20)), 0, 5e-1, (0, 255, 0), 2)
         cv2.namedWindow("YOLOV5-SORT", 0)
         cv2.resizeWindow('YOLOV5-SORT', 1280, 720)
-        writer.write(frame)
+        writer.write(cv2.resize(frame, (img_size[1], img_size[0])))
         cv2.imshow('YOLOV5-SORT', frame)
         # Q键停止
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -292,5 +301,24 @@ def main():
     cv2.destroyAllWindows()
 
 
+def track_videos():
+    ori_path = '/Users/qiuyurui/Projects/datas/smart_cycle/lucai_car/360-F18-FOV140-1440P/'
+    videos = os.listdir(ori_path)
+    save_path = '/Users/qiuyurui/Projects/datas/smart_cycle/lucai_car/360-F18-FOV140-1440P_test3/'
+    if not os.path.exists(save_path):
+        os.mkdir(save_path)
+    for video_file in videos:
+        if not video_file.endswith('mp4'):
+            continue
+        video_path = os.path.join(ori_path, video_file)
+        # ("/Users/qiuyurui/Projects/datas/bilibili_dashcam/249852744-1-192.mp4.mp4")
+        # #('/Users/qiuyurui/Projects/datas/smart_cycle/lucai_car/400w-banzai/part2-2021.8.24.ts')
+        main(video_path, video_file, save_path)
+
+
 if __name__ == '__main__':
-    main()
+    video_path = '/Users/qiuyurui/Projects/datas/bilibili_dashcam/'
+    video_file = '249852744-1-192.mp4.mp4'
+    save_path = './'
+    # main(os.path.join(video_path, video_file), video_file, save_path)
+    track_videos()

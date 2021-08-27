@@ -4,7 +4,7 @@ import numpy as np
 # from sklearn.utils.linear_assignment_ import linear_assignment
 from scipy.optimize import linear_sum_assignment as linear_assignment
 from . import kalman_filter
-
+from .nn_matching import _pdist
 
 INFTY_COST = 1e+5
 
@@ -75,6 +75,60 @@ def min_cost_matching(
         else:
             matches.append((track_idx, detection_idx))
     return matches, unmatched_tracks, unmatched_detections
+
+
+def bbox_distance_strategy(dets, trks, unmatch_dets_idx, unmatch_trks_idx, dist_thresh=200):
+    # bb_trks = np.expand_dims(unmatch_trks, 0)
+    # bb_dets = np.expand_dims(unmatch_dets, 1)
+    if len(unmatch_trks_idx) == 0:
+        return [], unmatch_dets_idx, []
+    if len(unmatch_dets_idx) == 0:
+        return [], [], unmatch_trks_idx
+    dets = np.array([det.to_tlbr() for det in dets])
+    trks = np.array([trk.to_tlbr() for trk in trks])
+    unmatch_dets = dets[np.array(unmatch_dets_idx)]
+    unmatch_trks = trks[np.array(unmatch_trks_idx)]
+
+    dets_center = np.concatenate([np.mean(unmatch_dets[:, [0, 2]], axis=1, keepdims=True),
+                                  np.mean(unmatch_dets[:, [1, 3]], axis=1, keepdims=True)], axis=1)
+
+    trks_center = np.concatenate([np.mean(unmatch_trks[:, [0, 2]], axis=1, keepdims=True),
+                                  np.mean(unmatch_trks[:, [1, 3]], axis=1, keepdims=True)], axis=1)
+
+    dist_matirx = np.sqrt(_pdist(dets_center, trks_center))
+
+    if min(dist_matirx.shape) > 0:
+        a = (dist_matirx < dist_thresh).astype(np.int32)
+        if a.sum(1).max() == 1 and a.sum(0).max() == 1:
+            matched_indices = np.where(a)
+        else:
+            matched_indices = linear_assignment(dist_matirx)
+    else:
+        matched_indices = np.empty(shape=(0, 2))
+    row_indices, col_indices = matched_indices
+    unmatched_detections = []
+    for d, det in enumerate(unmatch_dets):
+        if d not in row_indices:
+            unmatched_detections.append(unmatch_dets_idx[d])
+    unmatched_trackers = []
+    for t, trk in enumerate(unmatch_trks):
+        if t not in col_indices:
+            unmatched_trackers.append(unmatch_trks_idx[t])
+
+    # filter out matched with low IOU
+    matches = []
+    for m in zip(row_indices, col_indices):
+        if dist_matirx[m[0], m[1]] > dist_thresh:
+            unmatched_detections.append(unmatch_dets_idx[m[0]])
+            unmatched_trackers.append(unmatch_trks_idx[m[1]])
+        else:
+            matches.append(np.array([unmatch_dets_idx[m[0]], unmatch_trks_idx[m[1]]]).reshape(1, 2))
+    # if len(matches) == 0:
+    #     matches = np.empty((0, 2), dtype=int)
+    # else:
+    #     matches = np.concatenate(matches, axis=0)
+
+    return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
 
 
 def matching_cascade(

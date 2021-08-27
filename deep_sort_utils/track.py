@@ -16,7 +16,7 @@ class TrackState:
     Deleted = 3
 
 
-class Track:
+class TrackTarget:
     """
     A single target track with state space `(x, y, a, h)` and associated
     velocities, where `(x, y)` is the center of the bounding box, `a` is the
@@ -127,7 +127,7 @@ class Track:
         self.mean, self.covariance = kf.predict(self.mean, self.covariance)
         self.increment_age()
 
-    def update(self, kf, detection):
+    def update(self, kf, detection, class_id):
         """Perform Kalman filter measurement update step and update the feature
         cache.
 
@@ -145,6 +145,7 @@ class Track:
 
         self.hits += 1
         self.time_since_update = 0
+        self.class_id = class_id
         if self.state == TrackState.Tentative and self.hits >= self._n_init:
             self.state = TrackState.Confirmed
 
